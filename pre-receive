@@ -1,0 +1,72 @@
+#!/bin/bash
+# check commit message for JIRA issue numbers
+
+COMMIT_REGEX='(^JIRA-[0-9]+|^BUG-[0-9]+)'
+JIRA_DOMAIN=""
+JIRA_USER=""
+JIRA_PASS=""
+
+usage(){
+cat <<USAGE
+USAGE:
+    
+    git config user.name "JIRA USERNAME"
+    OR 
+    git config --global user.name "JIRA USERNAME"
+
+    commit message check
+    Example:
+        JIRA-1000 test commit check
+USAGE
+}
+
+function get_json_value(){
+    local json=$1
+    local key=$2
+
+    if [[ -z "$3" ]]; then
+        local num=1
+    else
+        local num=$3
+    fi
+
+    local value=$(echo "${json}" | awk -F"[,:}]" '{for(i=1;i<=NF;i++){if($i~/'${key}'\042/){print $(i+1)}}}' | sed -n ${num}p | sed 's/\"//g')
+    echo ${value}
+    return 0
+}
+
+while read oldrev newrev ref; do
+    author=$(git log --pretty=format:%an ${newrev} -1)
+    committer=$(git log --pretty=format:%cn ${newrev} -1)
+    commit_message=$(git log --pretty=format:%s ${newrev} -1)
+    jira_issues=$(echo ${commit_message} | grep -Eo "${COMMIT_REGEX}")
+
+    if [[ -z ${jira_issues} ]]; then
+        echo "Error commit message ! Your commit message is missing either a JIRA Issue" >&2
+        usage
+        exit 1
+    fi
+
+    issue_status_id=$(get_json_value "$(curl -s -u "${JIRA_USER}":"${JIRA_PASS}" -H "Accept: application/json" https://${JIRA_DOMAIN}/rest/api/2/issue/${jira_issues}?fields=status)" id 3)
+
+    if [[ -z ${issue_status_id} ]]; then
+        echo "JIRA issue does not exist" >&2
+        usage
+        exit 1
+    elif [[ ${issue_status_id} == "3" ]]; then
+        echo "JIRA issue have a done status" >&2
+        usage
+        exit 1
+    fi
+
+    assignee_username=$(get_json_value "$(curl -s -u "${JIRA_USER}":"${JIRA_PASS}" -H "Accept: application/json" https://${JIRA_DOMAIN}/rest/api/2/issue/${jira_issues}?fields=assignee)" name 1)
+
+    if [[ ${assignee_username} != ${author} && ${assignee_username} != ${committer} ]]; then
+        echo "assignee ${assignee_username} not you" >&2
+        usage
+        exit 1
+    fi
+    
+done
+
+exit 0

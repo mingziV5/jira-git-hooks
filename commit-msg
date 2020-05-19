@@ -1,0 +1,80 @@
+#!/bin/sh
+# check commit message for JIRA issue numbers
+
+COMMIT_REGEX='(^JIRA-[0-9]+|^BUG-[0-9]+)'
+JIRA_DOMAIN=""
+
+usage(){
+cat <<USAGE
+USAGE:
+    git config --local "jira.username" "USERNAME"
+    git config --local "jira.password" "PASSWORD"
+USAGE
+}
+
+function get_jira_config(){
+    if git status >/dev/null 2>&1; then
+        local jira_value="$(git config --get "jira.${1}")"
+
+        if [[ -z "${jira_value}" ]]; then
+            return 1
+        else
+            echo ${jira_value}
+            return 0
+        fi
+    fi
+}
+
+JIRA_USER=$(get_jira_config "username")
+if [[ $? -ne 0 ]]; then
+    usage
+    exit 1
+fi
+JIRA_PASS=$(get_jira_config "password")
+if [[ $? -ne 0 ]]; then
+    usage
+    exit 1
+fi
+
+input_file=$1
+first_line=$(head -n1 ${input_file})
+jira_issues=$(echo ${first_line} | grep -Eo "${COMMIT_REGEX}")
+
+if [[ -z ${jira_issues} ]]; then
+    echo "Error commit message ! Your commit message is missing either a JIRA Issue" >&2
+    exit 1
+fi
+
+function get_json_value(){
+    local json=$1
+    local key=$2
+    
+    if [[ -z "$3" ]]; then
+        local num=1
+    else
+        local num=$3
+    fi
+
+    local value=$(echo "${json}" | awk -F"[,:}]" '{for(i=1;i<=NF;i++){if($i~/'${key}'\042/){print $(i+1)}}}' | sed -n ${num}p | sed 's/\"//g')
+    echo ${value}
+    return 0
+}
+
+issue_status_id=$(get_json_value "$(curl -s -u "${JIRA_USER}":"${JIRA_PASS}" -H "Accept: application/json" https://${JIRA_DOMAIN}/rest/api/2/issue/${jira_issues}?fields=status)" id 3)
+
+if [[ -z ${issue_status_id} ]]; then
+    echo "JIRA issue does not exist" >&2
+    exit 1
+elif [[ ${issue_status_id} == "3" ]]; then
+    echo "JIRA issue have a done status" >&2
+fi
+
+assignee_username=$(get_json_value "$(curl -s -u "${JIRA_USER}":"${JIRA_PASS}" -H "Accept: application/json" https://${JIRA_DOMAIN}/rest/api/2/issue/${jira_issues}?fields=assignee)" name 1)
+
+
+if [[ ${assignee_username} != ${JIRA_USER} ]]; then
+    echo "assignee ${assignee_username} not you" >&2
+    exit 1
+fi
+
+exit 0
